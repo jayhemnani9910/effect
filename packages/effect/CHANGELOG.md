@@ -1,5 +1,13 @@
 # effect
 
+## 4.0.2
+
+### Patch Changes
+
+- [#8742](https://github.com/Effect-TS/effect/pull/8742) [`4153144`](https://github.com/Effect-TS/effect/commit/4153144de56b785409efadae655b4889452d0e10) Thanks @wouter173! - Fix the data-last overload of `AsyncResult.flatMap` to correctly infer a changed success type.
+
+- [#8748](https://github.com/Effect-TS/effect/pull/8748) [`b1d200c`](https://github.com/Effect-TS/effect/commit/b1d200c40a1dad69def51ebdbf0a1a612a12b8ac) Thanks @gcanti! - Expose the selected tag property key through `tag` on schemas returned by `Schema.toTaggedUnion` and `Schema.TaggedUnion`, closes [#8681](https://github.com/Effect-TS/effect/issues/8681).
+
 ## 4.0.1
 
 ### Patch Changes

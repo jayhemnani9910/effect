@@ -1,5 +1,13 @@
 # @effect/sql-pg
 
+## 4.0.2
+
+### Patch Changes
+
+- [#8746](https://github.com/Effect-TS/effect/pull/8746) [`13eb009`](https://github.com/Effect-TS/effect/commit/13eb0099aa49495957b96beaf88ea95edcac9886) Thanks @tim-smart! - Fix binary PostgreSQL interval decoding. Interval values preserve months, days, and bigint microseconds independently, with support for interval arrays and typed interval parameters.
+- Updated dependencies [[`4153144`](https://github.com/Effect-TS/effect/commit/4153144de56b785409efadae655b4889452d0e10), [`b1d200c`](https://github.com/Effect-TS/effect/commit/b1d200c40a1dad69def51ebdbf0a1a612a12b8ac)]:
+  - effect@4.0.2
+
 ## 4.0.1
 
 ### Patch Changes
