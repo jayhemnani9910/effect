@@ -1025,6 +1025,188 @@ describe("Command", () => {
       }).pipe(Effect.provide(TestLayer)))
   })
 
+  describe("validate", () => {
+    const exclusive = (input: { readonly useApi: boolean; readonly useDocker: boolean }) =>
+      input.useApi && input.useDocker
+        ? Effect.fail(new CliError.UserError({ cause: "--use-api and --use-docker cannot be used together" }))
+        : Effect.void
+
+    const makeDownload = (messages: Array<string>) =>
+      Command.make("download", {
+        useApi: Flag.Boolean("use-api").pipe(Flag.withDefault(false)),
+        useDocker: Flag.Boolean("use-docker").pipe(Flag.withDefault(false))
+      }, (config) =>
+        Effect.sync(() => {
+          messages.push(`download: api=${config.useApi}, docker=${config.useDocker}`)
+        }))
+
+    it.effect("runs the handler when the validation passes", () =>
+      Effect.gen(function*() {
+        const messages: Array<string> = []
+        const command = makeDownload(messages).pipe(Command.validate(exclusive))
+
+        yield* Command.runWith(command, { version: "1.0.0" })(["--use-api"])
+
+        assert.deepStrictEqual(messages, ["download: api=true, docker=false"])
+        assert.isEmpty(yield* TestConsole.errorLines)
+      }).pipe(Effect.provide(TestLayer)))
+
+    it.effect("reports a failed validation like a parse error and skips the handler", () =>
+      Effect.gen(function*() {
+        const messages: Array<string> = []
+        const command = makeDownload(messages).pipe(Command.validate(exclusive))
+
+        const error = yield* Effect.flip(
+          Command.runWith(command, { version: "1.0.0" })(["--use-api", "--use-docker"])
+        )
+
+        assert.instanceOf(error, CliError.ShowHelp)
+        assert.deepStrictEqual(error.commandPath, ["download"])
+        assert.lengthOf(error.errors, 1)
+        assert.strictEqual(error.errors[0].message, "--use-api and --use-docker cannot be used together")
+        assert.strictEqual(error[Runtime.errorExitCode], 1)
+        assert.isEmpty(messages)
+        assert.include((yield* TestConsole.errorLines).join("\n"), "--use-api and --use-docker cannot be used together")
+        assert.include((yield* TestConsole.logLines).join("\n"), "USAGE")
+      }).pipe(Effect.provide(TestLayer)))
+
+    it.effect("keeps the validation when the handler is set afterwards", () =>
+      Effect.gen(function*() {
+        const messages: Array<string> = []
+        const command = Command.make("download", {
+          useApi: Flag.Boolean("use-api").pipe(Flag.withDefault(false)),
+          useDocker: Flag.Boolean("use-docker").pipe(Flag.withDefault(false))
+        }).pipe(
+          Command.validate(exclusive),
+          Command.withHandler(() => Effect.sync(() => messages.push("handler")))
+        )
+
+        const error = yield* Effect.flip(
+          Command.runWith(command, { version: "1.0.0" })(["--use-api", "--use-docker"])
+        )
+
+        assert.instanceOf(error, CliError.ShowHelp)
+        assert.isEmpty(messages)
+      }).pipe(Effect.provide(TestLayer)))
+
+    it.effect("runs several validations in order and stops at the first failure", () =>
+      Effect.gen(function*() {
+        const calls: Array<string> = []
+        const command = makeDownload([]).pipe(
+          Command.validate(() => Effect.sync(() => calls.push("first"))),
+          Command.validate((input) =>
+            Effect.suspend(() => {
+              calls.push("second")
+              return exclusive(input)
+            })
+          ),
+          Command.validate(() => Effect.sync(() => calls.push("third")))
+        )
+
+        yield* Command.runWith(command, { version: "1.0.0" })(["--use-api", "--use-docker"]).pipe(Effect.ignore)
+
+        assert.deepStrictEqual(calls, ["first", "second"])
+      }).pipe(Effect.provide(TestLayer)))
+
+    it.effect("does not run when parsing fails", () =>
+      Effect.gen(function*() {
+        const calls: Array<string> = []
+        const command = makeDownload([]).pipe(
+          Command.validate(() => Effect.sync(() => calls.push("validate")))
+        )
+
+        const error = yield* Effect.flip(Command.runWith(command, { version: "1.0.0" })(["--unknown"]))
+
+        assert.instanceOf(error, CliError.ShowHelp)
+        assert.isEmpty(calls)
+      }).pipe(Effect.provide(TestLayer)))
+
+    it.effect("receives values from defaults and prompts", () =>
+      Effect.gen(function*() {
+        const seen: Array<unknown> = []
+        const command = Command.make("greet", {
+          name: Flag.String("name").pipe(Flag.withFallbackPrompt(Prompt.String({ message: "Name" }))),
+          greeting: Flag.String("greeting").pipe(Flag.withDefault("hello"))
+        }, () => Effect.void).pipe(
+          Command.validate((input) => Effect.sync(() => seen.push(input)))
+        )
+
+        const fiber = yield* Command.runWith(command, { version: "1.0.0" })([]).pipe(Effect.forkChild)
+        yield* MockTerminal.inputText("Chandra")
+        yield* MockTerminal.inputKey("enter")
+        yield* Fiber.join(fiber)
+
+        assert.deepStrictEqual(seen, [{ name: "Chandra", greeting: "hello" }])
+      }).pipe(Effect.provide(TestLayer)))
+
+    it.effect("can use the CLI environment", () =>
+      Effect.gen(function*() {
+        const command = Command.make("build", {
+          outDir: Flag.String("out-dir")
+        }, () => Effect.void).pipe(
+          Command.validate(({ outDir }) =>
+            Effect.gen(function*() {
+              const path = yield* Path.Path
+              if (!path.isAbsolute(outDir)) {
+                return yield* new CliError.InvalidValue({
+                  option: "out-dir",
+                  value: outDir,
+                  expected: "an absolute path",
+                  kind: "flag"
+                })
+              }
+            })
+          )
+        )
+        const run = Command.runWith(command, { version: "1.0.0" })
+
+        yield* run(["--out-dir", "/tmp/out"])
+        const error = yield* Effect.flip(run(["--out-dir", "out"]))
+
+        assert.instanceOf(error, CliError.ShowHelp)
+        assert.instanceOf(error.errors[0], CliError.InvalidValue)
+      }).pipe(Effect.provide(TestLayer)))
+
+    it.effect("validates a subcommand's own input and shows the subcommand help", () =>
+      Effect.gen(function*() {
+        const messages: Array<string> = []
+        const functions = Command.make("functions").pipe(
+          Command.withSubcommands([makeDownload(messages).pipe(Command.validate(exclusive))])
+        )
+
+        const error = yield* Effect.flip(
+          Command.runWith(functions, { version: "1.0.0" })(["download", "--use-api", "--use-docker"])
+        )
+
+        assert.instanceOf(error, CliError.ShowHelp)
+        assert.deepStrictEqual(error.commandPath, ["functions", "download"])
+        assert.isEmpty(messages)
+        assert.include((yield* TestConsole.logLines).join("\n"), "functions download")
+      }).pipe(Effect.provide(TestLayer)))
+
+    it.effect("sees shared flags on subcommand paths when applied after withSubcommands", () =>
+      Effect.gen(function*() {
+        const messages: Array<string> = []
+        const child = Command.make("deploy", {}, () => Effect.sync(() => messages.push("deploy")))
+        const root = Command.make("tool").pipe(
+          Command.withSharedFlags({
+            useApi: Flag.Boolean("use-api").pipe(Flag.withDefault(false)),
+            useDocker: Flag.Boolean("use-docker").pipe(Flag.withDefault(false))
+          }),
+          Command.withSubcommands([child]),
+          Command.validate(exclusive)
+        )
+        const run = Command.runWith(root, { version: "1.0.0" })
+
+        yield* run(["--use-api", "deploy"])
+        const error = yield* Effect.flip(run(["--use-api", "deploy", "--use-docker"]))
+
+        assert.deepStrictEqual(messages, ["deploy"])
+        assert.instanceOf(error, CliError.ShowHelp)
+        assert.strictEqual(error.errors[0].message, "--use-api and --use-docker cannot be used together")
+      }).pipe(Effect.provide(TestLayer)))
+  })
+
   describe("withSubcommands", () => {
     it("preserves unlisted metadata when adding subcommands", () => {
       const withChild = Command.make("internal").pipe(

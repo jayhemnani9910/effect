@@ -101,6 +101,30 @@ describe("Command", () => {
     })
   })
 
+  describe("validate", () => {
+    it("infers the parsed input and keeps the command type", () => {
+      const command = Command.make("download", {
+        useApi: Flag.Boolean("use-api"),
+        useDocker: Flag.Boolean("use-docker")
+      }, () => Effect.void as Effect.Effect<void, "err">).pipe(
+        Command.validate((input) => {
+          expect(input).type.toBe<{ readonly useApi: boolean; readonly useDocker: boolean }>()
+          return Effect.void
+        })
+      )
+
+      expect(command).type.toBe<
+        Command.Command<
+          "download",
+          { readonly useApi: boolean; readonly useDocker: boolean },
+          {},
+          "err",
+          never
+        >
+      >()
+    })
+  })
+
   describe("withGlobalFlags", () => {
     it("strips setting context from mixed global flags", () => {
       const VerboseAction = GlobalFlag.Action({
