@@ -42,9 +42,10 @@ const makeTable = (): Table => Object.create(null)
 const isTable = (value: unknown): value is Table =>
   typeof value === "object" && value !== null && !Array.isArray(value) && !(value instanceof Date)
 const localDatePattern = /^(\d{4})-(\d{2})-(\d{2})$/
-const localTimePattern = /^(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?$/
+// TOML 1.1 makes the seconds optional
+const localTimePattern = /^(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?$/
 const numericOffsetPattern = /^[+-](\d{2}):(\d{2})$/
-const dateTimePattern = /^(\d{4}-\d{2}-\d{2})[Tt](\d{2}:\d{2}:\d{2}(?:\.\d+)?)([Zz]|[+-]\d{2}:\d{2})?$/
+const dateTimePattern = /^(\d{4}-\d{2}-\d{2})[Tt](\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)([Zz]|[+-]\d{2}:\d{2})?$/
 const daysInMonth = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
 const isValidDate = (date: string): boolean => {
   const [, year, month, day] = localDatePattern.exec(date)!.map(Number)
@@ -53,9 +54,11 @@ const isValidDate = (date: string): boolean => {
   return month >= 1 && month <= 12 && day >= 1 && day <= days
 }
 const isValidTime = (time: string): boolean => {
-  const [, hour, minute, second] = localTimePattern.exec(time)!.map(Number)
-  return hour <= 23 && minute <= 59 && second <= 60
+  const [, hour, minute, second = "0"] = localTimePattern.exec(time)!
+  return Number(hour) <= 23 && Number(minute) <= 59 && Number(second) <= 60
 }
+// A time written without seconds has zero seconds
+const withSeconds = (time: string): string => time.length === 5 ? `${time}:00` : time
 const isValidOffset = (offset: string): boolean => {
   const numeric = numericOffsetPattern.exec(offset)
   return numeric === null || (Number(numeric[1]) <= 23 && Number(numeric[2]) <= 59)
@@ -235,7 +238,7 @@ class TomlParser {
       return table
     }
 
-    const spaceSeparatedDateTime = /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})?)/
+    const spaceSeparatedDateTime = /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:[Zz]|[+-]\d{2}:\d{2})?)/
       .exec(this.input.slice(this.index))
     if (spaceSeparatedDateTime !== null) {
       this.advance(spaceSeparatedDateTime[0].length)
@@ -266,7 +269,8 @@ class TomlParser {
   private parseDate(token: string): Date | string | undefined {
     const dateTime = dateTimePattern.exec(token)
     if (dateTime !== null) {
-      const [, date, time, offset] = dateTime
+      const [, date, written, offset] = dateTime
+      const time = withSeconds(written)
       // `Date` cannot represent a leap second, so offset date-times reject `:60`
       const offsetValid = offset === undefined || (isValidOffset(offset) && time.slice(6, 8) !== "60")
       if (!isValidDate(date) || !isValidTime(time) || !offsetValid) {
@@ -278,7 +282,7 @@ class TomlParser {
       return isValidDate(token) ? token : this.fail(`Invalid date-time '${token}'`)
     }
     if (localTimePattern.test(token)) {
-      return isValidTime(token) ? token : this.fail(`Invalid date-time '${token}'`)
+      return isValidTime(token) ? withSeconds(token) : this.fail(`Invalid date-time '${token}'`)
     }
     return undefined
   }
@@ -356,13 +360,14 @@ class TomlParser {
         n: "\n",
         f: "\f",
         r: "\r",
+        e: "\u001b",
         "\"": "\"",
         "\\": "\\"
       }
       if (hasOwn.call(escapes, escape)) {
         output += escapes[escape]
-      } else if (escape === "u" || escape === "U") {
-        const length = escape === "u" ? 4 : 8
+      } else if (escape === "x" || escape === "u" || escape === "U") {
+        const length = escape === "x" ? 2 : escape === "u" ? 4 : 8
         const hex = this.input.slice(this.index, this.index + length)
         const codePoint = Number.parseInt(hex, 16)
         if (
@@ -439,28 +444,22 @@ class TomlParser {
   private parseInlineTable(): Table {
     this.expect("{")
     const output = makeTable()
-    this.skipInlineWhitespace()
-    if (this.peek() === "}") {
-      this.advance()
-      return output
-    }
-    while (true) {
+    // TOML 1.1 lets an inline table span lines, with comments and a trailing comma
+    this.skipArrayWhitespace()
+    while (this.peek() !== "}") {
       const keys = this.parseKeyPath("=")
       this.skipInlineWhitespace()
       this.expect("=")
       this.skipInlineWhitespace()
       this.assign(output, keys, this.parseValue())
-      this.skipInlineWhitespace()
-      if (this.peek() === "}") {
-        this.advance()
-        return output
-      }
-      this.expect(",")
-      this.skipInlineWhitespace()
-      if (this.peek() === "}") {
-        this.fail("Inline tables cannot end with a trailing comma")
+      this.skipArrayWhitespace()
+      if (this.peek() !== "}") {
+        this.expect(",")
+        this.skipArrayWhitespace()
       }
     }
+    this.advance()
+    return output
   }
 
   private skipDocumentWhitespace(): void {

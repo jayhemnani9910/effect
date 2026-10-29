@@ -232,6 +232,30 @@ two = ${delimiter}value${quote}${quote}${delimiter}`)),
     )
   })
 
+  it("parses the TOML 1.1 additions", () => {
+    assert.deepStrictEqual(
+      Result.getOrThrow(Toml.parse(`
+point = {
+  x = 1, # first
+  y = 2,
+}
+escapes = "\\e[0m \\x41"
+time = 13:37
+local = 1979-05-27T07:32
+`)),
+      {
+        point: { x: 1, y: 2 },
+        escapes: "\u001b[0m A",
+        time: "13:37:00",
+        local: "1979-05-27T07:32:00"
+      }
+    )
+    assert.deepStrictEqual(
+      Result.getOrThrow(Toml.parse("odt = 1979-05-27 07:32Z")),
+      { odt: new Date("1979-05-27T07:32:00Z") }
+    )
+  })
+
   it("rejects out of range dates and times", () => {
     const invalid = [
       "1979-02-30T07:32:00Z",
